@@ -12,9 +12,10 @@ import platform
 
 class FaceRecognitionSystem:
     def __init__(self, model_path='yolov8n-face.pt', data_dir='face_data', 
-                 confidence_threshold=0.5, master_name="master",
-                 inactivity_timeout=10, check_interval=1, 
-                 recognition_tolerance=0.4):
+             confidence_threshold=0.5, master_name="master",
+             inactivity_timeout=10, check_interval=1, 
+             recognition_tolerance=0.4, pin=2486):
+        
         # Initialize parameters
         self.model_path = model_path
         self.data_dir = data_dir
@@ -22,7 +23,14 @@ class FaceRecognitionSystem:
         self.master_name = master_name
         self.inactivity_timeout = 10  # Increased from 5 to 10 seconds
         self.check_interval = check_interval
-        
+        self.pin = pin
+
+        #flag to track if the system has been locked by the autolock program
+        self.system_locked_by_program = False
+
+        # Add timestamp of when the system was locked by the program
+        self.lock_timestamp = None
+
         # Create directory for face data if it doesn't exist
         os.makedirs(self.data_dir, exist_ok=True)
 
@@ -378,6 +386,11 @@ class FaceRecognitionSystem:
             os.system('pmset displaysleepnow')
         elif platform.system() == 'Linux':
             os.system('xdg-screensaver lock')
+
+        # Set the lock flag
+        self.system_locked_by_program = True
+        self.lock_timestamp = time.time()
+        print("System locked by program")
     
     def allow_sleep(self):
         """Allow the system to sleep normally"""
@@ -475,6 +488,12 @@ class FaceRecognitionSystem:
                                         self.last_activity_time = time.time()
                                         self.prevent_sleep()
 
+                                        # Check if system was locked by our program and needs to be unlocked
+                                        if self.system_locked_by_program:
+                                            print("Master detected after lock - attempting auto-unlock")
+                                            self.auto_unlock_system()
+                                            self.system_locked_by_program = False  # Reset the flag
+
                                         label = f"{identity}: {rec_confidence:.1f}% (avg: {avg_confidence:.1f}%)"
 
                                         # Show blacklist message on screen instead of using input()
@@ -542,6 +561,8 @@ def main():
                        help="Recognition confidence tolerance (lower = more sensitive)")
     parser.add_argument("--retrain", action="store_true",
                        help="Force retraining of the master profile")
+    parser.add_argument("--pin", type=int, default=1234,
+                       help="PIN to use for auto-unlock (default: 1234)")
     
     args = parser.parse_args()
     
@@ -564,7 +585,8 @@ def main():
         data_dir=args.data_dir,
         master_name=args.master,
         inactivity_timeout=args.timeout,
-        recognition_tolerance=args.tolerance
+        recognition_tolerance=args.tolerance,
+        pin=args.pin
     )
     
     system.run()
