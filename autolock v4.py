@@ -12,25 +12,17 @@ import platform
 
 class FaceRecognitionSystem:
     def __init__(self, model_path='yolov8n-face.pt', data_dir='face_data', 
-             confidence_threshold=0.5, master_name="master",
-             inactivity_timeout=10, check_interval=1, 
-             recognition_tolerance=0.4, pin=2486):
-        
+                 confidence_threshold=0.5, master_name="master",
+                 inactivity_timeout=5, check_interval=1, 
+                 recognition_tolerance=0.4):
         # Initialize parameters
         self.model_path = model_path
         self.data_dir = data_dir
         self.confidence_threshold = confidence_threshold
         self.master_name = master_name
-        self.inactivity_timeout = 10  # Increased from 5 to 10 seconds
+        self.inactivity_timeout = 5
         self.check_interval = check_interval
-        self.pin = pin
-
-        #flag to track if the system has been locked by the autolock program
-        self.system_locked_by_program = False
-
-        # Add timestamp of when the system was locked by the program
-        self.lock_timestamp = None
-
+        
         # Create directory for face data if it doesn't exist
         os.makedirs(self.data_dir, exist_ok=True)
 
@@ -301,7 +293,6 @@ class FaceRecognitionSystem:
         combined_features = np.concatenate([hog_features.flatten(), downsized])
 
         return combined_features
-
     
     def get_feature_dimensions(self):
         """Get the expected feature dimensions from the trained model"""
@@ -386,11 +377,6 @@ class FaceRecognitionSystem:
             os.system('pmset displaysleepnow')
         elif platform.system() == 'Linux':
             os.system('xdg-screensaver lock')
-
-        # Set the lock flag
-        self.system_locked_by_program = True
-        self.lock_timestamp = time.time()
-        print("System locked by program")
     
     def allow_sleep(self):
         """Allow the system to sleep normally"""
@@ -408,10 +394,54 @@ class FaceRecognitionSystem:
                 self.lock_system()
                 # Reset timer to avoid multiple locks
                 self.last_activity_time = current_time
+                self.unlock_system()  # Start monitoring for unlocking
             
             # Sleep to avoid excessive CPU usage
             time.sleep(self.check_interval)
     
+    def unlock_system(self):
+        """Unlocks Windows when the master is detected after locking."""
+        pin = "2486"  # Store your 4-digit PIN here
+
+        print("Waiting for master to return to unlock system...")
+
+        while True:
+            cap = cv2.VideoCapture(0)  # Open webcam
+            ret, frame = cap.read()
+            if not ret:
+                cap.release()
+                time.sleep(1)
+                continue
+
+            results = self.model(frame)
+            if len(results[0].boxes) > 0:
+                for box in results[0].boxes:
+                    bbox = box.xyxy.cpu().numpy()[0]
+                    confidence = box.conf.cpu().numpy()[0]
+
+                    if confidence > self.confidence_threshold:
+                        face_crop = self.get_face_crop(frame, bbox)
+                        if face_crop is not None:
+                            face_resized = cv2.resize(face_crop, (112, 112))
+                            identity, rec_confidence = self.recognize_face(face_resized)
+
+                            if identity == self.master_name and rec_confidence >= 75:
+                                print("Master detected - unlocking system")
+
+                                if platform.system() == 'Windows':
+                                    time.sleep(2)  # Ensure Windows login screen is ready
+                                    ctypes.windll.user32.LockWorkStation()  # Bring up login screen
+                                    time.sleep(2)
+                                    import pyautogui
+                                    pyautogui.typewrite(pin)  # Enter stored PIN
+                                    pyautogui.press('enter')
+
+                                cap.release()
+                                return  # Exit once unlocked
+
+            cap.release()
+            time.sleep(2)  # Avoid excessive CPU usage
+
     def run(self):
         """Main run loop for the face recognition system"""
         # Check if we need to create a master profile
@@ -488,12 +518,6 @@ class FaceRecognitionSystem:
                                         self.last_activity_time = time.time()
                                         self.prevent_sleep()
 
-                                        # Check if system was locked by our program and needs to be unlocked
-                                        if self.system_locked_by_program:
-                                            print("Master detected after lock - attempting auto-unlock")
-                                            self.auto_unlock_system()
-                                            self.system_locked_by_program = False  # Reset the flag
-
                                         label = f"{identity}: {rec_confidence:.1f}% (avg: {avg_confidence:.1f}%)"
 
                                         # Show blacklist message on screen instead of using input()
@@ -561,8 +585,6 @@ def main():
                        help="Recognition confidence tolerance (lower = more sensitive)")
     parser.add_argument("--retrain", action="store_true",
                        help="Force retraining of the master profile")
-    parser.add_argument("--pin", type=int, default=1234,
-                       help="PIN to use for auto-unlock (default: 1234)")
     
     args = parser.parse_args()
     
@@ -585,8 +607,7 @@ def main():
         data_dir=args.data_dir,
         master_name=args.master,
         inactivity_timeout=args.timeout,
-        recognition_tolerance=args.tolerance,
-        pin=args.pin
+        recognition_tolerance=args.tolerance
     )
     
     system.run()
