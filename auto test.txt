@@ -1,0 +1,11 @@
+import pickle
+import numpy as np
+
+embeddings_file = "face_data/master_embeddings.pkl"
+
+with open(embeddings_file, "rb") as f:
+    embeddings, labels = pickle.load(f)
+
+print(f"Number of embeddings: {len(embeddings)}")
+print(f"Embedding shape: {embeddings[0].shape if len(embeddings) > 0 else 'None'}")
+print(f"Labels: {labels}")
