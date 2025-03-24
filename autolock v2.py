@@ -13,19 +13,22 @@ import platform
 class FaceRecognitionSystem:
     def __init__(self, model_path='yolov8n-face.pt', data_dir='face_data', 
                  confidence_threshold=0.5, master_name="master",
-                 inactivity_timeout=15, check_interval=1, 
+                 inactivity_timeout=10, check_interval=1, 
                  recognition_tolerance=0.4):
         # Initialize parameters
         self.model_path = model_path
         self.data_dir = data_dir
         self.confidence_threshold = confidence_threshold
         self.master_name = master_name
-        self.inactivity_timeout = 15  # Increased from 5 to 15 seconds
+        self.inactivity_timeout = 10  # Increased from 5 to 10 seconds
         self.check_interval = check_interval
         
         # Create directory for face data if it doesn't exist
         os.makedirs(self.data_dir, exist_ok=True)
-        
+
+        self.blacklist_file = os.path.join(self.data_dir, "blacklist.pkl")
+        self.blacklist = self.load_blacklist()
+
         # Load YOLOv8 model
         print("Loading YOLOv8 face detection model...")
         self.model = YOLO(self.model_path)
@@ -51,7 +54,23 @@ class FaceRecognitionSystem:
         
         # System lock control thread
         self.lock_control_thread = threading.Thread(target=self.monitor_presence)
-        
+    
+    def load_blacklist(self):
+        """Load blacklisted embeddings from file"""
+        if os.path.exists(self.blacklist_file):
+            with open(self.blacklist_file, 'rb') as f:
+                return pickle.load(f)
+        return []
+
+    def add_to_blacklist(self, face_img):
+        """Extract embedding and add it to blacklist"""
+        embedding = self.extract_features_with_dim_check(face_img)
+        self.blacklist.append(embedding)
+
+        # Save blacklist to file
+        with open(self.blacklist_file, 'wb') as f:
+            pickle.dump(self.blacklist, f)
+
     def load_face_recognition_model(self):
         """Load the KNN model for face recognition if it exists"""
         if os.path.exists(self.knn_model_file):
@@ -304,7 +323,7 @@ class FaceRecognitionSystem:
         return embedding
 
     def recognize_face(self, face_img):
-        """Recognize a face using the trained KNN model and apply confidence threshold"""
+        """Recognize a face using KNN and apply confidence threshold"""
         if self.face_recognizer is None:
             return None, 0.0
 
@@ -322,13 +341,17 @@ class FaceRecognitionSystem:
             predicted_class = self.face_recognizer.classes_[indices[0][0]]
             avg_distance = np.mean(distances[0])
             max_distance = 20.0
+            confidence = max(0, 1 - (avg_distance / max_distance)) * 100  
 
-            confidence = max(0, 1 - (avg_distance / max_distance))  # Keep confidence between 0-1
-            confidence *= 100  # Convert to percentage only once
+            # If this embedding is in the blacklist, force it to "Unknown"
+            for blacklisted_embedding in self.blacklist:
+                if np.linalg.norm(blacklisted_embedding - embedding) < 3.0:  # Similar to KNN threshold
+                    print("⚠️ Blacklisted face detected! Marking as unknown.")
+                    return None, 0.0
 
-            # NEW FIX: If confidence is 75% or more, treat as master
+            # If confidence is above 75%, return as master
             if confidence >= 75:
-                return self.master_name, confidence  # Force recognition as master
+                return self.master_name, confidence
 
             return None, confidence
 
@@ -440,20 +463,30 @@ class FaceRecognitionSystem:
                                 color = (0, 0, 255)  # Default red for unknown
                                 
                                 if identity == self.master_name:
-                                    # Track recent confidence values
                                     self.recent_confidences.append(rec_confidence)
                                     if len(self.recent_confidences) > self.confidence_history_size:
                                         self.recent_confidences.pop(0)
 
-                                    avg_confidence = sum(self.recent_confidences) / len(self.recent_confidences)  # Keep in 0-100 range
+                                    avg_confidence = sum(self.recent_confidences) / len(self.recent_confidences)
 
-                                    # If confidence is above 75%, treat it as a valid recognition
                                     if avg_confidence >= 75:
                                         color = (0, 255, 0)  # Green
                                         self.master_present = True
                                         self.last_activity_time = time.time()
                                         self.prevent_sleep()
+
                                         label = f"{identity}: {rec_confidence:.1f}% (avg: {avg_confidence:.1f}%)"
+
+                                        # Show blacklist message on screen instead of using input()
+                                        cv2.putText(display_frame, "Press 'B' to Blacklist", 
+                                                    (10, display_frame.shape[0] - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+                                        # Check if the user pressed 'B' (blacklist)
+                                        key = cv2.waitKey(1) & 0xFF
+                                        if key == ord('b'):
+                                            self.add_to_blacklist(face_resized)
+                                            print("⚠️ Face has been added to the blacklist!")
+
                                     else:
                                         color = (0, 0, 255)  # Red
                                         label = f"Unknown: {rec_confidence:.1f}%"
