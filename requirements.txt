@@ -1,0 +1,6 @@
+opencv-python
+numpy
+pickle5
+ultralytics
+scikit-learn
+pyautogui
